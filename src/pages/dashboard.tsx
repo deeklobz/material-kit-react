@@ -1,10 +1,27 @@
 import { CONFIG } from 'src/config-global';
+import { useAuth } from 'src/context/AuthContext';
 
-import { OverviewAnalyticsView as DashboardView } from 'src/sections/overview/view';
+import { PlatformDashboardView } from 'src/sections/platform-admin';
+import { PropertyManagerDashboardView } from 'src/sections/property-manager';
 
 // ----------------------------------------------------------------------
 
 export default function Page() {
+  const { user } = useAuth();
+
+  const renderDashboard = () => {
+    if (user?.role === 'platform_admin') {
+      return <PlatformDashboardView />;
+    }
+    
+    if (user?.role === 'org_admin' || user?.role === 'manager') {
+      return <PropertyManagerDashboardView />;
+    }
+
+    // Default fallback
+    return <PropertyManagerDashboardView />;
+  };
+
   return (
     <>
       <title>{`Dashboard - ${CONFIG.appName}`}</title>
@@ -14,7 +31,7 @@ export default function Page() {
       />
       <meta name="keywords" content="react,material,kit,application,dashboard,admin,template" />
 
-      <DashboardView />
+      {renderDashboard()}
     </>
   );
 }
