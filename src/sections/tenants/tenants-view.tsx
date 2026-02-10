@@ -1,10 +1,13 @@
-import { useCallback, useMemo, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMemo, useState, useCallback } from 'react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 
 import Box from '@mui/material/Box';
+import Tab from '@mui/material/Tab';
 import Card from '@mui/material/Card';
+import Tabs from '@mui/material/Tabs';
 import Stack from '@mui/material/Stack';
 import Table from '@mui/material/Table';
+import Alert from '@mui/material/Alert';
 import Button from '@mui/material/Button';
 import Avatar from '@mui/material/Avatar';
 import Drawer from '@mui/material/Drawer';
@@ -20,6 +23,7 @@ import TableHead from '@mui/material/TableHead';
 import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
 import IconButton from '@mui/material/IconButton';
+import FormControlLabel from '@mui/material/FormControlLabel';
 import DialogTitle from '@mui/material/DialogTitle';
 import DialogContent from '@mui/material/DialogContent';
 import DialogActions from '@mui/material/DialogActions';
@@ -27,12 +31,10 @@ import TableContainer from '@mui/material/TableContainer';
 import TablePagination from '@mui/material/TablePagination';
 import CircularProgress from '@mui/material/CircularProgress';
 import MenuItem, { menuItemClasses } from '@mui/material/MenuItem';
-import Tabs from '@mui/material/Tabs';
-import Tab from '@mui/material/Tab';
 
-import { additionalChargeService } from 'src/services/additionalChargeService';
-import { type Tenant, type TenantDetail, tenantService } from 'src/services/tenantService';
 import { unitService } from 'src/services/unitService';
+import { additionalChargeService } from 'src/services/additionalChargeService';
+import { type Tenant, tenantService, type TenantDetail } from 'src/services/tenantService';
 
 import { Label } from 'src/components/label';
 import { Iconify } from 'src/components/iconify';
@@ -44,7 +46,8 @@ export function TenantsView() {
   const queryClient = useQueryClient();
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(10);
-  const [selected, setSelected] = useState<string[]>([]);
+  const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'inactive' | 'blacklisted' | 'suspended'>('all');
   const [createOpen, setCreateOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [detailsTab, setDetailsTab] = useState(0);
@@ -52,6 +55,7 @@ export function TenantsView() {
   const [editOpen, setEditOpen] = useState(false);
   const [editingTenant, setEditingTenant] = useState<Tenant | null>(null);
   const [vacateOpen, setVacateOpen] = useState(false);
+  const [relocateOpen, setRelocateOpen] = useState(false);
   const [refundOpen, setRefundOpen] = useState(false);
   const [ratingOpen, setRatingOpen] = useState(false);
   const [violationOpen, setViolationOpen] = useState(false);
@@ -80,6 +84,14 @@ export function TenantsView() {
     termination_date: '',
     termination_reason: '',
   });
+
+  const [relocateForm, setRelocateForm] = useState({
+    unit_id: '',
+    relocation_date: '',
+    end_date: '',
+    termination_reason: '',
+    refund_excess: false,
+  });
   const [refundForm, setRefundForm] = useState({
     lease_id: '',
     deposit_amount: '',
@@ -101,15 +113,43 @@ export function TenantsView() {
     resolution_notes: '',
   });
 
-  const { data: tenantsData, isLoading, error } = useQuery<Tenant[] | { data: Tenant[]; total: number }>({
-    queryKey: ['tenants'],
-    queryFn: tenantService.getAll,
+  // Financials
+  const [financialStart, setFinancialStart] = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-01-01`;
+  });
+  const [financialEnd, setFinancialEnd] = useState(() => {
+    const d = new Date();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${d.getFullYear()}-${mm}-${dd}`;
+  });
+
+  const {
+    data: tenantsPage,
+    isLoading,
+    error,
+  } = useQuery({
+    queryKey: ['tenants', { page, rowsPerPage, search, statusFilter }],
+    queryFn: () =>
+      tenantService.list({
+        page: page + 1,
+        per_page: rowsPerPage,
+        search: search.trim() || undefined,
+        status: statusFilter === 'all' ? undefined : statusFilter,
+      }),
   });
 
   const { data: tenantDetail, isLoading: tenantDetailLoading } = useQuery<TenantDetail>({
     queryKey: ['tenant', selectedTenantId],
     queryFn: () => tenantService.getById(selectedTenantId as string),
     enabled: !!selectedTenantId,
+  });
+
+  const financialsQuery = useQuery({
+    queryKey: ['tenant-financials', selectedTenantId, financialStart, financialEnd],
+    queryFn: () => tenantService.getFinancials(selectedTenantId as string, { start_date: financialStart, end_date: financialEnd }),
+    enabled: !!selectedTenantId && detailsOpen,
   });
 
   const { data: vacantUnits = [] } = useQuery({
@@ -140,13 +180,24 @@ export function TenantsView() {
     mutationFn: ({ id, data }: { id: string; data: any }) => tenantService.update(id, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['tenants'] });
-      queryClient.invalidateQueries({ queryKey: ['tenant'] });
+      if (selectedTenantId) {
+        queryClient.invalidateQueries({ queryKey: ['tenant', selectedTenantId] });
+      }
     },
   });
 
   const vacateMutation = useMutation({
     mutationFn: ({ tenantId, payload }: { tenantId: string; payload: any }) =>
       tenantService.vacate(tenantId, payload),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tenant'] });
+      queryClient.invalidateQueries({ queryKey: ['tenants'] });
+    },
+  });
+
+  const relocateMutation = useMutation({
+    mutationFn: ({ tenantId, payload }: { tenantId: string; payload: any }) =>
+      tenantService.relocate(tenantId, payload),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['tenant'] });
       queryClient.invalidateQueries({ queryKey: ['tenants'] });
@@ -179,15 +230,19 @@ export function TenantsView() {
 
   const handleDeleteRow = useCallback(
     async (id: string) => {
-      if (window.confirm('Are you sure you want to delete this tenant?')) {
+      if (!window.confirm('Archive this tenant?')) return;
+
+      try {
         await deleteMutation.mutateAsync(id);
+      } catch (err: any) {
+        alert(err?.response?.data?.message || err?.message || 'Failed to archive tenant');
       }
     },
     [deleteMutation]
   );
 
-  const tenants = Array.isArray(tenantsData) ? tenantsData : (tenantsData?.data || []);
-  const totalTenants = Array.isArray(tenantsData) ? tenantsData.length : (tenantsData?.total || 0);
+  const tenants: Tenant[] = (tenantsPage as any)?.data ?? [];
+  const totalTenants: number = (tenantsPage as any)?.total ?? (tenantsPage as any)?.meta?.total ?? tenants.length;
 
   const currentLease = (tenantDetail as any)?.currentLease || (tenantDetail as any)?.current_lease;
   const tenantLeases = (tenantDetail as any)?.leases || [];
@@ -363,6 +418,32 @@ export function TenantsView() {
     }
   }, [selectedTenantId, vacateForm, vacateMutation]);
 
+  const handleRelocate = useCallback(async () => {
+    if (!selectedTenantId) return;
+
+    if (!relocateForm.unit_id || !relocateForm.relocation_date) {
+      alert('Please select target unit and relocation date');
+      return;
+    }
+
+    try {
+      await relocateMutation.mutateAsync({
+        tenantId: selectedTenantId,
+        payload: {
+          unit_id: relocateForm.unit_id,
+          relocation_date: relocateForm.relocation_date,
+          end_date: relocateForm.end_date || undefined,
+          termination_reason: relocateForm.termination_reason || undefined,
+          refund_excess: relocateForm.refund_excess,
+        },
+      });
+      setRelocateOpen(false);
+    } catch (err: any) {
+      const message = err?.response?.data?.message || err?.message || 'Failed to relocate tenant.';
+      alert(message);
+    }
+  }, [relocateForm, relocateMutation, selectedTenantId]);
+
   const handleRefund = useCallback(async () => {
     if (!selectedTenantId) return;
     try {
@@ -449,14 +530,52 @@ export function TenantsView() {
           </Box>
         ) : (
           <>
+            <Stack spacing={1.5} sx={{ p: 2 }}>
+              <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} alignItems={{ md: 'center' }}>
+                <TextField
+                  size="small"
+                  label="Search tenants"
+                  value={search}
+                  onChange={(e) => {
+                    setSearch(e.target.value);
+                    setPage(0);
+                  }}
+                  sx={{ width: { xs: '100%', md: 320 } }}
+                />
+
+                <Box sx={{ flex: 1 }} />
+
+                <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+                  {totalTenants.toLocaleString()} total
+                </Typography>
+              </Stack>
+
+              <Tabs
+                value={statusFilter}
+                onChange={(_, v) => {
+                  setStatusFilter(v);
+                  setPage(0);
+                }}
+                variant="scrollable"
+                allowScrollButtonsMobile
+              >
+                <Tab value="all" label="All" />
+                <Tab value="active" label="Active" />
+                <Tab value="inactive" label="Inactive" />
+                <Tab value="blacklisted" label="Blacklisted" />
+                <Tab value="suspended" label="Suspended" />
+              </Tabs>
+
+              {tenants.length === 0 && (search.trim() || statusFilter !== 'all') && (
+                <Alert severity="info">No tenants match your filters.</Alert>
+              )}
+            </Stack>
+
             <Scrollbar>
               <TableContainer sx={{ overflow: 'unset' }}>
                 <Table sx={{ minWidth: 800 }}>
                   <TableHead>
                     <TableRow>
-                      <TableCell padding="checkbox">
-                        <Checkbox />
-                      </TableCell>
                       <TableCell>Tenant</TableCell>
                       <TableCell>Contact</TableCell>
                       <TableCell>Tenant Code</TableCell>
@@ -466,15 +585,36 @@ export function TenantsView() {
                     </TableRow>
                   </TableHead>
                   <TableBody>
-                    {tenants
-                      .slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage)
-                      .map((tenant) => (
+                    {tenants.map((tenant) => (
                         <TenantTableRow
                           key={tenant.id}
                           tenant={tenant}
                           onDelete={() => handleDeleteRow(tenant.id)}
                           onView={() => handleOpenDetails(tenant.id)}
                           onEdit={() => handleEditTenant(tenant)}
+                          onVacate={() => {
+                            setSelectedTenantId(tenant.id);
+                            setDetailsOpen(true);
+                            setVacateForm({ termination_date: '', termination_reason: '' });
+                            setVacateOpen(true);
+                          }}
+                          onRelocate={() => {
+                            const today = new Date();
+                            const mm = String(today.getMonth() + 1).padStart(2, '0');
+                            const dd = String(today.getDate()).padStart(2, '0');
+                            const iso = `${today.getFullYear()}-${mm}-${dd}`;
+
+                            setSelectedTenantId(tenant.id);
+                            setDetailsOpen(true);
+                            setRelocateForm({
+                              unit_id: '',
+                              relocation_date: iso,
+                              end_date: '',
+                              termination_reason: 'Relocated',
+                              refund_excess: false,
+                            });
+                            setRelocateOpen(true);
+                          }}
                         />
                       ))}
                   </TableBody>
@@ -832,6 +972,26 @@ export function TenantsView() {
                 <Button
                   variant="outlined"
                   onClick={() => {
+                    const today = new Date();
+                    const mm = String(today.getMonth() + 1).padStart(2, '0');
+                    const dd = String(today.getDate()).padStart(2, '0');
+                    const iso = `${today.getFullYear()}-${mm}-${dd}`;
+
+                    setRelocateForm({
+                      unit_id: '',
+                      relocation_date: iso,
+                      end_date: currentLease?.end_date?.toString?.() || '',
+                      termination_reason: 'Relocated',
+                      refund_excess: false,
+                    });
+                    setRelocateOpen(true);
+                  }}
+                >
+                  Relocate
+                </Button>
+                <Button
+                  variant="outlined"
+                  onClick={() => {
                     setRefundForm({
                       lease_id: currentLease?.id || '',
                       deposit_amount: currentLease?.deposit_amount?.toString() || '',
@@ -873,6 +1033,7 @@ export function TenantsView() {
 
               <Tabs value={detailsTab} onChange={(_, v) => setDetailsTab(v)} sx={{ mt: 2 }}>
                 <Tab label="Overview" />
+                <Tab label="Financials" />
                 <Tab label="Invoices" />
                 <Tab label="Payments" />
                 <Tab label="Charges" />
@@ -894,6 +1055,103 @@ export function TenantsView() {
               )}
 
               {detailsTab === 1 && (
+                <Stack spacing={2}>
+                  <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems={{ sm: 'center' }}>
+                    <TextField
+                      label="From"
+                      type="date"
+                      InputLabelProps={{ shrink: true }}
+                      value={financialStart}
+                      onChange={(e) => setFinancialStart(e.target.value)}
+                      size="small"
+                      sx={{ width: { xs: '100%', sm: 180 } }}
+                    />
+                    <TextField
+                      label="To"
+                      type="date"
+                      InputLabelProps={{ shrink: true }}
+                      value={financialEnd}
+                      onChange={(e) => setFinancialEnd(e.target.value)}
+                      size="small"
+                      sx={{ width: { xs: '100%', sm: 180 } }}
+                    />
+                    <Box sx={{ flex: 1 }} />
+                    <Button
+                      variant="contained"
+                      disabled={!selectedTenantId}
+                      onClick={async () => {
+                        try {
+                          const blob = await tenantService.downloadFinancialsPdf(selectedTenantId as string, {
+                            start_date: financialStart,
+                            end_date: financialEnd,
+                          });
+
+                          const url = URL.createObjectURL(blob);
+                          const a = document.createElement('a');
+                          a.href = url;
+                          a.download = `tenant_financials_${selectedTenantId}_${financialStart}_to_${financialEnd}.pdf`;
+                          document.body.appendChild(a);
+                          a.click();
+                          a.remove();
+                          URL.revokeObjectURL(url);
+                        } catch (err: any) {
+                          alert(err?.response?.data?.message || err?.message || 'Failed to download PDF');
+                        }
+                      }}
+                    >
+                      Download PDF
+                    </Button>
+                  </Stack>
+
+                  {financialsQuery.isLoading ? (
+                    <Box sx={{ display: 'flex', justifyContent: 'center', py: 2 }}>
+                      <CircularProgress size={22} />
+                    </Box>
+                  ) : financialsQuery.error ? (
+                    <Typography color="error">Failed to load financials.</Typography>
+                  ) : (
+                    <>
+                      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} sx={{ flexWrap: 'wrap' }}>
+                        <Card sx={{ p: 2, flex: 1 }}>
+                          <Typography variant="body2" color="text.secondary">Total invoiced</Typography>
+                          <Typography variant="h6">KES {Number(financialsQuery.data?.summary?.totals?.total_invoiced ?? 0).toLocaleString()}</Typography>
+                        </Card>
+                        <Card sx={{ p: 2, flex: 1 }}>
+                          <Typography variant="body2" color="text.secondary">Total paid (cash)</Typography>
+                          <Typography variant="h6">KES {Number(financialsQuery.data?.summary?.totals?.total_paid ?? 0).toLocaleString()}</Typography>
+                        </Card>
+                        <Card sx={{ p: 2, flex: 1 }}>
+                          <Typography variant="body2" color="text.secondary">Credits (carried forward)</Typography>
+                          <Typography variant="h6">KES {Number(financialsQuery.data?.summary?.totals?.total_credits ?? 0).toLocaleString()}</Typography>
+                        </Card>
+                      </Stack>
+
+                      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
+                        <Card sx={{ p: 2, flex: 1 }}>
+                          <Typography variant="body2" color="text.secondary">Balance due</Typography>
+                          <Typography variant="h6">KES {Number(financialsQuery.data?.summary?.totals?.balance_due ?? 0).toLocaleString()}</Typography>
+                        </Card>
+                        <Card sx={{ p: 2, flex: 1 }}>
+                          <Typography variant="body2" color="text.secondary">Overdue</Typography>
+                          <Typography variant="h6">KES {Number(financialsQuery.data?.summary?.totals?.overdue_due ?? 0).toLocaleString()}</Typography>
+                        </Card>
+                      </Stack>
+
+                      <Card sx={{ p: 2 }}>
+                        <Typography variant="body2" color="text.secondary">Quick stats</Typography>
+                        <Typography variant="body2">
+                          Open invoices: {financialsQuery.data?.summary?.totals?.open_invoices ?? 0} • 
+                          Invoices: {financialsQuery.data?.summary?.totals?.invoices_count ?? 0} • 
+                          Payments: {financialsQuery.data?.summary?.totals?.payments_count ?? 0} • 
+                          Last payment: {financialsQuery.data?.summary?.totals?.last_payment_date || '-'}
+                        </Typography>
+                      </Card>
+                    </>
+                  )}
+                </Stack>
+              )}
+
+              {detailsTab === 2 && (
                 <Stack spacing={1}>
                   {tenantInvoices.map((inv: any) => (
                     <Card key={inv.id} sx={{ p: 2 }}>
@@ -905,7 +1163,7 @@ export function TenantsView() {
                 </Stack>
               )}
 
-              {detailsTab === 2 && (
+              {detailsTab === 3 && (
                 <Stack spacing={1}>
                   {tenantPayments.map((pay: any) => (
                     <Card key={pay.id} sx={{ p: 2 }}>
@@ -917,7 +1175,7 @@ export function TenantsView() {
                 </Stack>
               )}
 
-              {detailsTab === 3 && (
+              {detailsTab === 4 && (
                 <Stack spacing={1}>
                   {tenantCharges.map((charge: any) => (
                     <Card key={charge.id} sx={{ p: 2 }}>
@@ -931,7 +1189,7 @@ export function TenantsView() {
                 </Stack>
               )}
 
-              {detailsTab === 4 && (
+              {detailsTab === 5 && (
                 <Stack spacing={1}>
                   {tenantViolations.map((v: any) => (
                     <Card key={v.id} sx={{ p: 2 }}>
@@ -943,7 +1201,7 @@ export function TenantsView() {
                 </Stack>
               )}
 
-              {detailsTab === 5 && (
+              {detailsTab === 6 && (
                 <Stack spacing={1}>
                   {tenantRatings.map((r: any) => (
                     <Card key={r.id} sx={{ p: 2 }}>
@@ -954,7 +1212,7 @@ export function TenantsView() {
                 </Stack>
               )}
 
-              {detailsTab === 6 && (
+              {detailsTab === 7 && (
                 <Stack spacing={1}>
                   {tenantRefunds.map((d: any) => (
                     <Card key={d.id} sx={{ p: 2 }}>
@@ -996,6 +1254,77 @@ export function TenantsView() {
         <DialogActions>
           <Button onClick={() => setVacateOpen(false)}>Cancel</Button>
           <Button variant="contained" onClick={handleVacate}>Confirm</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Relocate Dialog */}
+      <Dialog open={relocateOpen} onClose={() => setRelocateOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Relocate Tenant</DialogTitle>
+        <DialogContent sx={{ pt: 2 }}>
+          <Stack spacing={2}>
+            <Alert severity="info">
+              This will terminate the current lease and create a new active lease on the selected unit.
+            </Alert>
+
+            <TextField
+              select
+              label="Target Vacant Unit"
+              value={relocateForm.unit_id}
+              onChange={(e) => setRelocateForm({ ...relocateForm, unit_id: e.target.value })}
+              fullWidth
+              required
+            >
+              {vacantUnits
+                .filter((u: any) => u?.id !== currentLease?.unit_id)
+                .map((unit: any) => (
+                  <MenuItem key={unit.id} value={unit.id}>
+                    {unit.unit_number} {unit.property?.name ? `(${unit.property?.name})` : ''}
+                  </MenuItem>
+                ))}
+            </TextField>
+
+            <TextField
+              label="Relocation Date"
+              type="date"
+              InputLabelProps={{ shrink: true }}
+              value={relocateForm.relocation_date}
+              onChange={(e) => setRelocateForm({ ...relocateForm, relocation_date: e.target.value })}
+              fullWidth
+              required
+            />
+
+            <TextField
+              label="New Lease End Date (optional)"
+              type="date"
+              InputLabelProps={{ shrink: true }}
+              value={relocateForm.end_date}
+              onChange={(e) => setRelocateForm({ ...relocateForm, end_date: e.target.value })}
+              fullWidth
+            />
+
+            <TextField
+              label="Termination Reason (optional)"
+              value={relocateForm.termination_reason}
+              onChange={(e) => setRelocateForm({ ...relocateForm, termination_reason: e.target.value })}
+              fullWidth
+            />
+
+            <FormControlLabel
+              control={
+                <Checkbox
+                  checked={relocateForm.refund_excess}
+                  onChange={(e) => setRelocateForm({ ...relocateForm, refund_excess: e.target.checked })}
+                />
+              }
+              label="Refund excess deposit instead of credit"
+            />
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setRelocateOpen(false)}>Cancel</Button>
+          <Button variant="contained" onClick={handleRelocate} disabled={relocateMutation.isPending}>
+            {relocateMutation.isPending ? 'Relocating…' : 'Confirm'}
+          </Button>
         </DialogActions>
       </Dialog>
 
@@ -1158,15 +1487,26 @@ export function TenantsView() {
   );
 }
 
-function TenantTableRow({ tenant, onDelete, onView, onEdit }: { tenant: Tenant; onDelete: () => void; onView: () => void; onEdit: () => void }) {
+function TenantTableRow({
+  tenant,
+  onDelete,
+  onView,
+  onEdit,
+  onVacate,
+  onRelocate,
+}: {
+  tenant: Tenant;
+  onDelete: () => void;
+  onView: () => void;
+  onEdit: () => void;
+  onVacate: () => void;
+  onRelocate: () => void;
+}) {
   const [openPopover, setOpenPopover] = useState<HTMLButtonElement | null>(null);
 
   return (
     <>
       <TableRow hover>
-        <TableCell padding="checkbox">
-          <Checkbox />
-        </TableCell>
         <TableCell>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
             <Avatar>
@@ -1235,9 +1575,17 @@ function TenantTableRow({ tenant, onDelete, onView, onEdit }: { tenant: Tenant; 
             <Iconify icon="solar:eye-bold" />
             View
           </MenuItem>
+          <MenuItem onClick={onVacate}>
+            <Iconify icon="solar:restart-bold" />
+            Vacate
+          </MenuItem>
+          <MenuItem onClick={onRelocate}>
+            <Iconify icon="solar:share-bold" />
+            Relocate
+          </MenuItem>
           <MenuItem onClick={onDelete} sx={{ color: 'error.main' }}>
             <Iconify icon="solar:trash-bin-trash-bold" />
-            Delete
+            Archive
           </MenuItem>
         </MenuList>
       </Popover>

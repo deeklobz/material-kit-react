@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import Card from '@mui/material/Card';
 import Stack from '@mui/material/Stack';
@@ -20,12 +20,17 @@ import Chip from '@mui/material/Chip';
 import CircularProgress from '@mui/material/CircularProgress';
 import Alert from '@mui/material/Alert';
 import Grid from '@mui/material/Grid';
+import Dialog from '@mui/material/Dialog';
+import DialogTitle from '@mui/material/DialogTitle';
+import DialogContent from '@mui/material/DialogContent';
+import DialogActions from '@mui/material/DialogActions';
 
 import { DashboardContent } from 'src/layouts/dashboard';
 import { Iconify } from 'src/components/iconify';
 
 import reportService from 'src/services/reportService';
 import { propertyService } from 'src/services/propertyService';
+import { propertyExpenseService } from 'src/services/propertyExpenseService';
 
 // ----------------------------------------------------------------------
 
@@ -139,6 +144,7 @@ export function ReportsView() {
           <Tab label="Profitability" />
           <Tab label="Arrears Aging" />
           <Tab label="Occupancy Trends" />
+          <Tab label="Expenses" />
         </Tabs>
 
         <TabPanel value={currentTab} index={0}>
@@ -176,6 +182,17 @@ export function ReportsView() {
             propertyId={selectedProperty}
             startDate={dateRange.start_date}
             endDate={dateRange.end_date}
+          />
+        </TabPanel>
+
+        <TabPanel value={currentTab} index={5}>
+          <ExpensesTab
+            propertyId={selectedProperty}
+            startDate={dateRange.start_date}
+            endDate={dateRange.end_date}
+            properties={properties || []}
+            formatCurrency={formatCurrency}
+            formatDate={formatDate}
           />
         </TabPanel>
       </Card>
@@ -309,14 +326,19 @@ function OwnerStatementTab({
                   <TableHead>
                     <TableRow>
                       <TableCell>Category</TableCell>
-                      <TableCell align="right">Work Orders</TableCell>
+                      <TableCell align="right">Items</TableCell>
                       <TableCell align="right">Amount</TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
                     {statement.expenses.by_category.map((category: any) => (
                       <TableRow key={category.category}>
-                        <TableCell>{category.category}</TableCell>
+                        <TableCell>
+                          <Stack direction="row" spacing={1} alignItems="center">
+                            <Box>{category.category}</Box>
+                            {category.source === 'manual' && <Chip label="Manual" size="small" variant="outlined" />}
+                          </Stack>
+                        </TableCell>
                         <TableCell align="right">{category.work_order_count}</TableCell>
                         <TableCell align="right">{formatCurrency(category.total_cost)}</TableCell>
                       </TableRow>
@@ -333,6 +355,17 @@ function OwnerStatementTab({
                   </TableBody>
                 </Table>
               </TableContainer>
+
+              {(statement.expenses.maintenance_total != null || statement.expenses.other_total != null) && (
+                <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} sx={{ mt: 1 }}>
+                  <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                    Maintenance: <strong>{formatCurrency(statement.expenses.maintenance_total || 0)}</strong>
+                  </Typography>
+                  <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                    Other: <strong>{formatCurrency(statement.expenses.other_total || 0)}</strong>
+                  </Typography>
+                </Stack>
+              )}
             </Box>
           </Box>
 
@@ -530,6 +563,229 @@ function RentRollTab({
           </Table>
         </TableContainer>
       </Card>
+    </Stack>
+  );
+}
+
+function ExpensesTab({
+  propertyId,
+  startDate,
+  endDate,
+  properties,
+  formatCurrency,
+  formatDate,
+}: {
+  propertyId: string;
+  startDate: string;
+  endDate: string;
+  properties: any[];
+  formatCurrency: (amount: number) => string;
+  formatDate: (date: string) => string;
+}) {
+  const queryClient = useQueryClient();
+  const [createOpen, setCreateOpen] = useState(false);
+  const [form, setForm] = useState({
+    property_id: propertyId || '',
+    incurred_on: endDate,
+    amount: '',
+    category: 'utilities',
+    reference: '',
+    description: '',
+  });
+
+  const listParams = {
+    property_id: propertyId || undefined,
+    start_date: startDate,
+    end_date: endDate,
+    per_page: 50,
+  };
+
+  const { data, isLoading, error } = useQuery({
+    queryKey: ['property-expenses', listParams],
+    queryFn: () => propertyExpenseService.getAll(listParams),
+  });
+
+  const createMutation = useMutation({
+    mutationFn: () =>
+      propertyExpenseService.create({
+        property_id: form.property_id,
+        incurred_on: form.incurred_on,
+        amount: Number(form.amount || 0),
+        category: form.category,
+        reference: form.reference || undefined,
+        description: form.description || undefined,
+      }),
+    onSuccess: () => {
+      setCreateOpen(false);
+      queryClient.invalidateQueries({ queryKey: ['property-expenses'] });
+      queryClient.invalidateQueries({ queryKey: ['ownerStatement'] });
+      queryClient.invalidateQueries({ queryKey: ['profitability'] });
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => propertyExpenseService.delete(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['property-expenses'] });
+      queryClient.invalidateQueries({ queryKey: ['ownerStatement'] });
+      queryClient.invalidateQueries({ queryKey: ['profitability'] });
+    },
+  });
+
+  return (
+    <Stack spacing={2} sx={{ p: 2 }}>
+      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems={{ sm: 'center' }} justifyContent="space-between">
+        <Typography variant="h6">Manual / Other Expenses</Typography>
+        <Button
+          variant="contained"
+          startIcon={<Iconify icon="mingcute:add-line" />}
+          onClick={() => {
+            setForm((p) => ({ ...p, property_id: propertyId || p.property_id }));
+            setCreateOpen(true);
+          }}
+        >
+          Add Expense
+        </Button>
+      </Stack>
+
+      {isLoading && (
+        <Box sx={{ display: 'flex', justifyContent: 'center', p: 3 }}>
+          <CircularProgress />
+        </Box>
+      )}
+
+      {error && (
+        <Alert severity="error">Failed to load expenses</Alert>
+      )}
+
+      {!isLoading && !error && (
+        <Card>
+          <TableContainer>
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell>Date</TableCell>
+                  <TableCell>Property</TableCell>
+                  <TableCell>Category</TableCell>
+                  <TableCell>Description</TableCell>
+                  <TableCell align="right">Amount</TableCell>
+                  <TableCell align="right">Actions</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {(data?.data || []).map((e: any) => (
+                  <TableRow key={e.id}>
+                    <TableCell>{formatDate(e.incurred_on)}</TableCell>
+                    <TableCell>{e.property?.name || '-'}</TableCell>
+                    <TableCell>
+                      <Chip label={String(e.category || '').toUpperCase()} size="small" />
+                    </TableCell>
+                    <TableCell>{e.description || '-'}</TableCell>
+                    <TableCell align="right">{formatCurrency(Number(e.amount || 0))}</TableCell>
+                    <TableCell align="right">
+                      <Button
+                        color="error"
+                        size="small"
+                        onClick={async () => {
+                          if (!window.confirm('Delete this expense?')) return;
+                          await deleteMutation.mutateAsync(e.id);
+                        }}
+                        disabled={deleteMutation.isPending}
+                      >
+                        Delete
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+
+                {(data?.data || []).length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={6} align="center" sx={{ py: 4 }}>
+                      <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+                        No manual expenses in this period.
+                      </Typography>
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </Card>
+      )}
+
+      <Dialog open={createOpen} onClose={() => setCreateOpen(false)} fullWidth maxWidth="sm">
+        <DialogTitle>Add Expense</DialogTitle>
+        <DialogContent sx={{ pt: 2 }}>
+          <Stack spacing={2} sx={{ mt: 1 }}>
+            <TextField
+              select
+              label="Property"
+              value={form.property_id}
+              onChange={(ev) => setForm((p) => ({ ...p, property_id: ev.target.value }))}
+              fullWidth
+            >
+              {properties.map((p: any) => (
+                <MenuItem key={p.id} value={p.id}>
+                  {p.name}
+                </MenuItem>
+              ))}
+            </TextField>
+
+            <TextField
+              label="Date"
+              type="date"
+              value={form.incurred_on}
+              onChange={(ev) => setForm((p) => ({ ...p, incurred_on: ev.target.value }))}
+              InputLabelProps={{ shrink: true }}
+              fullWidth
+            />
+
+            <TextField
+              label="Amount"
+              type="number"
+              value={form.amount}
+              onChange={(ev) => setForm((p) => ({ ...p, amount: ev.target.value }))}
+              fullWidth
+            />
+
+            <TextField
+              label="Category"
+              value={form.category}
+              onChange={(ev) => setForm((p) => ({ ...p, category: ev.target.value }))}
+              fullWidth
+              helperText="Examples: utilities, security, insurance, management_fee, tax"
+            />
+
+            <TextField
+              label="Reference (optional)"
+              value={form.reference}
+              onChange={(ev) => setForm((p) => ({ ...p, reference: ev.target.value }))}
+              fullWidth
+            />
+
+            <TextField
+              label="Description (optional)"
+              value={form.description}
+              onChange={(ev) => setForm((p) => ({ ...p, description: ev.target.value }))}
+              fullWidth
+              multiline
+              minRows={2}
+            />
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setCreateOpen(false)}>Cancel</Button>
+          <Button
+            variant="contained"
+            onClick={async () => {
+              await createMutation.mutateAsync();
+            }}
+            disabled={!form.property_id || !form.incurred_on || !form.amount || !form.category || createMutation.isPending}
+          >
+            {createMutation.isPending ? 'Saving…' : 'Save'}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Stack>
   );
 }

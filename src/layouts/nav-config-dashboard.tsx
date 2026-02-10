@@ -151,6 +151,12 @@ export const propertyManagerNav: NavItem[] = [
     roles: ['org_admin', 'manager', 'caretaker'],
   },
   {
+    title: 'Utilities',
+    path: '/utilities',
+    icon: icon('ic-analytics'),
+    roles: ['org_admin', 'manager', 'caretaker'],
+  },
+  {
     title: 'Reports',
     path: '/reports',
     icon: icon('ic-analytics'),

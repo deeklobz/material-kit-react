@@ -1,15 +1,18 @@
-import { useMemo, useState, useCallback } from 'react';
+import { useMemo, useState, useEffect, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 
 import Box from '@mui/material/Box';
 import Card from '@mui/material/Card';
+import Menu from '@mui/material/Menu';
 import Stack from '@mui/material/Stack';
 import Table from '@mui/material/Table';
+import Drawer from '@mui/material/Drawer';
 import Button from '@mui/material/Button';
 import Dialog from '@mui/material/Dialog';
 import Select from '@mui/material/Select';
 import Divider from '@mui/material/Divider';
 import Tooltip from '@mui/material/Tooltip';
+import Checkbox from '@mui/material/Checkbox';
 import MenuItem from '@mui/material/MenuItem';
 import TableRow from '@mui/material/TableRow';
 import TableBody from '@mui/material/TableBody';
@@ -27,6 +30,7 @@ import TableContainer from '@mui/material/TableContainer';
 import TablePagination from '@mui/material/TablePagination';
 import CircularProgress from '@mui/material/CircularProgress';
 
+import { CONFIG } from 'src/config-global';
 import { unitService } from 'src/services/unitService';
 import { vendorService } from 'src/services/vendorService';
 import { propertyService } from 'src/services/propertyService';
@@ -34,6 +38,7 @@ import { staffManagementService } from 'src/services/staffManagementService';
 import {
   type WorkOrder,
   workOrderService,
+  type WorkOrderStats,
   type WorkOrderStatus,
   type WorkOrderCategory,
   type WorkOrderPriority,
@@ -101,24 +106,62 @@ function formatDate(value?: string | null): string {
   return d.toLocaleDateString();
 }
 
+function getServerUrl(): string {
+  return CONFIG.apiUrl.replace(/\/api\/?$/, '');
+}
+
+function attachmentUrl(att: any): string {
+  const serverUrl = getServerUrl();
+
+  if (typeof att === 'string') {
+    if (att.startsWith('http')) return att;
+    if (att.startsWith('/')) return `${serverUrl}${att}`;
+    return `${serverUrl}/${att}`;
+  }
+
+  const url = att?.url || att?.path;
+  if (!url) return '';
+  if (typeof url === 'string' && url.startsWith('http')) return url;
+  if (typeof url === 'string' && url.startsWith('/')) return `${serverUrl}${url}`;
+  return `${serverUrl}/${url}`;
+}
+
 export function WorkOrdersView() {
   const queryClient = useQueryClient();
 
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(20);
 
-  const [filters, setFilters] = useState<{ property_id: string; status: string; priority: string; category: string }>(
+  const [filters, setFilters] = useState<{ property_id: string; status: string; priority: string; category: string; search: string }>(
     {
       property_id: '',
       status: '',
       priority: '',
       category: '',
+      search: '',
     }
   );
 
   const [createOpen, setCreateOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [editing, setEditing] = useState<WorkOrder | null>(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [selectedWorkOrderId, setSelectedWorkOrderId] = useState<string | null>(null);
+
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [bulkStatus, setBulkStatus] = useState<'' | WorkOrderStatus>('');
+
+  const [statusMenu, setStatusMenu] = useState<{ anchorEl: HTMLElement | null; workOrderId: string | null }>({
+    anchorEl: null,
+    workOrderId: null,
+  });
+
+  const [updateForm, setUpdateForm] = useState({
+    comment: '',
+    new_status: '' as '' | WorkOrderStatus,
+  });
+
+  const [updateFiles, setUpdateFiles] = useState<File[]>([]);
 
   const [form, setForm] = useState({
     property_id: '',
@@ -156,6 +199,12 @@ export function WorkOrdersView() {
     queryFn: () => staffManagementService.getStaffMembers(),
   });
 
+  const { data: selectedWorkOrder, isLoading: selectedWorkOrderLoading } = useQuery({
+    queryKey: ['work-order', selectedWorkOrderId],
+    queryFn: () => workOrderService.getById(selectedWorkOrderId as string),
+    enabled: !!selectedWorkOrderId,
+  });
+
   const selectedPropertyId = form.property_id || filters.property_id;
 
   const { data: units = [] } = useQuery({
@@ -172,6 +221,7 @@ export function WorkOrdersView() {
       status: (filters.status as WorkOrderStatus) || undefined,
       priority: (filters.priority as WorkOrderPriority) || undefined,
       category: (filters.category as WorkOrderCategory) || undefined,
+      search: filters.search || undefined,
     }),
     [filters, page, rowsPerPage]
   );
@@ -185,8 +235,25 @@ export function WorkOrdersView() {
     queryFn: () => workOrderService.getAll(listParams),
   });
 
+  const statsParams = useMemo(
+    () => ({
+      property_id: filters.property_id || undefined,
+    }),
+    [filters.property_id]
+  );
+
+  const { data: stats } = useQuery<WorkOrderStats>({
+    queryKey: ['work-order-stats', statsParams],
+    queryFn: () => workOrderService.getStats(statsParams),
+  });
+
   const workOrders = workOrdersPage?.data || [];
   const total = workOrdersPage?.total || 0;
+
+  useEffect(() => {
+    // Keep selections consistent with current filters/page
+    setSelectedIds([]);
+  }, [filters, page, rowsPerPage]);
 
   const createMutation = useMutation({
     mutationFn: () =>
@@ -205,6 +272,7 @@ export function WorkOrdersView() {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['work-orders'] });
+      queryClient.invalidateQueries({ queryKey: ['work-order-stats'] });
       setCreateOpen(false);
     },
   });
@@ -225,14 +293,107 @@ export function WorkOrdersView() {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['work-orders'] });
+      queryClient.invalidateQueries({ queryKey: ['work-order-stats'] });
       setEditOpen(false);
       setEditing(null);
     },
   });
 
+  const addUpdateMutation = useMutation({
+    mutationFn: () => {
+      if (updateFiles.length > 0) {
+        const fd = new FormData();
+        fd.append('comment', updateForm.comment);
+        if (updateForm.new_status) {
+          fd.append('new_status', updateForm.new_status);
+        }
+        updateFiles.forEach((f) => fd.append('attachments[]', f));
+        return workOrderService.addUpdate(selectedWorkOrderId as string, fd);
+      }
+
+      return workOrderService.addUpdate(selectedWorkOrderId as string, {
+        comment: updateForm.comment,
+        new_status: updateForm.new_status || undefined,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['work-orders'] });
+      queryClient.invalidateQueries({ queryKey: ['work-order'] });
+      queryClient.invalidateQueries({ queryKey: ['work-order-stats'] });
+      setUpdateForm({ comment: '', new_status: '' });
+      setUpdateFiles([]);
+    },
+  });
+
+  const changeStatusMutation = useMutation({
+    mutationFn: ({ id, status }: { id: string; status: WorkOrderStatus }) =>
+      workOrderService.addUpdate(id, {
+        comment: `Status changed to ${status}`,
+        new_status: status,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['work-orders'] });
+      queryClient.invalidateQueries({ queryKey: ['work-order'] });
+      queryClient.invalidateQueries({ queryKey: ['work-order-stats'] });
+    },
+  });
+
+  const bulkStatusMutation = useMutation({
+    mutationFn: async () => {
+      const status = bulkStatus;
+      const ids = [...selectedIds];
+      if (!status || ids.length === 0) {
+        return { total: ids.length, failed: 0 };
+      }
+
+      const settled = await Promise.allSettled(
+        ids.map((id) =>
+          workOrderService.addUpdate(id, {
+            comment: `Bulk status changed to ${status}`,
+            new_status: status,
+          })
+        )
+      );
+
+      const failed = settled.filter((s) => s.status === 'rejected').length;
+      return { total: ids.length, failed };
+    },
+    onSuccess: ({ failed, total: totalCount }) => {
+      queryClient.invalidateQueries({ queryKey: ['work-orders'] });
+      queryClient.invalidateQueries({ queryKey: ['work-order'] });
+      queryClient.invalidateQueries({ queryKey: ['work-order-stats'] });
+      setSelectedIds([]);
+      setBulkStatus('');
+      if (failed) {
+        alert(`${failed} of ${totalCount} updates failed.`);
+      }
+    },
+  });
+
+  const bulkDeleteMutation = useMutation({
+    mutationFn: async () => {
+      const ids = [...selectedIds];
+      const settled = await Promise.allSettled(ids.map((id) => workOrderService.delete(id)));
+      const failed = settled.filter((s) => s.status === 'rejected').length;
+      return { total: ids.length, failed };
+    },
+    onSuccess: ({ failed, total: totalCount }) => {
+      queryClient.invalidateQueries({ queryKey: ['work-orders'] });
+      queryClient.invalidateQueries({ queryKey: ['work-order'] });
+      queryClient.invalidateQueries({ queryKey: ['work-order-stats'] });
+      setSelectedIds([]);
+      if (failed) {
+        alert(`${failed} of ${totalCount} deletes failed.`);
+      }
+    },
+  });
+
   const deleteMutation = useMutation({
     mutationFn: (id: string) => workOrderService.delete(id),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['work-orders'] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['work-orders'] });
+      queryClient.invalidateQueries({ queryKey: ['work-order-stats'] });
+    },
   });
 
   const resetForm = useCallback(() => {
@@ -276,6 +437,28 @@ export function WorkOrdersView() {
     setEditOpen(true);
   };
 
+  const openDetails = (id: string) => {
+    setSelectedWorkOrderId(id);
+    setDetailsOpen(true);
+  };
+
+  const idsThisPage = workOrders.map((w) => w.id);
+  const selectedOnPage = idsThisPage.filter((id) => selectedIds.includes(id));
+  const isAllSelectedThisPage = idsThisPage.length > 0 && selectedOnPage.length === idsThisPage.length;
+  const isSomeSelectedThisPage = selectedOnPage.length > 0 && !isAllSelectedThisPage;
+
+  const handleSelectAllOnPage = (checked: boolean) => {
+    if (checked) {
+      setSelectedIds((prev) => Array.from(new Set([...prev, ...idsThisPage])));
+    } else {
+      setSelectedIds((prev) => prev.filter((id) => !idsThisPage.includes(id)));
+    }
+  };
+
+  const handleSelectOne = (id: string, checked: boolean) => {
+    setSelectedIds((prev) => (checked ? Array.from(new Set([...prev, id])) : prev.filter((x) => x !== id)));
+  };
+
   const handleDelete = async (id: string) => {
     if (window.confirm('Delete this work order?')) {
       await deleteMutation.mutateAsync(id);
@@ -299,9 +482,69 @@ export function WorkOrdersView() {
         </Button>
       </Stack>
 
+      <Box
+        sx={{
+          display: 'grid',
+          gap: 2,
+          gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, 1fr)', lg: 'repeat(4, 1fr)' },
+          mb: 2,
+        }}
+      >
+        <Card sx={{ p: 2 }}>
+          <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+            Open
+          </Typography>
+          <Typography variant="h5">{stats?.by_status?.open ?? 0}</Typography>
+          <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+            Avg open: {stats?.avg_open_days ?? 0} days
+          </Typography>
+        </Card>
+
+        <Card sx={{ p: 2 }}>
+          <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+            Urgent (active)
+          </Typography>
+          <Typography variant="h5">{stats?.urgent_open ?? 0}</Typography>
+          <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+            Open / In progress / On hold
+          </Typography>
+        </Card>
+
+        <Card sx={{ p: 2 }}>
+          <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+            Overdue scheduled
+          </Typography>
+          <Typography variant="h5">{stats?.overdue_scheduled ?? 0}</Typography>
+          <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+            Scheduled date &lt; today
+          </Typography>
+        </Card>
+
+        <Card sx={{ p: 2 }}>
+          <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+            Maintenance expenses
+          </Typography>
+          <Typography variant="h5">{stats?.expenses ? formatMoney(stats.expenses.total) : '-'}</Typography>
+          <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+            Spent (completed): {stats?.expenses ? formatMoney(stats.expenses.spent_completed) : '-'} • Committed (open):{' '}
+            {stats?.expenses ? formatMoney(stats.expenses.committed_open) : '-'}
+          </Typography>
+        </Card>
+      </Box>
+
       <Card>
         <Box sx={{ p: 2 }}>
           <Stack direction={{ xs: 'column', md: 'row' }} spacing={2}>
+            <TextField
+              label="Search"
+              value={filters.search}
+              onChange={(e) => {
+                setPage(0);
+                setFilters((p) => ({ ...p, search: e.target.value }));
+              }}
+              fullWidth
+            />
+
             <FormControl fullWidth>
               <InputLabel>Property</InputLabel>
               <Select
@@ -378,6 +621,59 @@ export function WorkOrdersView() {
               </Select>
             </FormControl>
           </Stack>
+
+          {selectedIds.length > 0 && (
+            <Stack
+              direction={{ xs: 'column', md: 'row' }}
+              spacing={2}
+              alignItems={{ md: 'center' }}
+              sx={{ mt: 2 }}
+            >
+              <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+                {selectedIds.length} selected
+              </Typography>
+
+              <FormControl fullWidth>
+                <InputLabel>Bulk status</InputLabel>
+                <Select
+                  value={bulkStatus}
+                  label="Bulk status"
+                  onChange={(e) => setBulkStatus(e.target.value as any)}
+                >
+                  <MenuItem value="">Choose…</MenuItem>
+                  {STATUS_OPTIONS.map((o) => (
+                    <MenuItem key={o.value} value={o.value}>
+                      {o.label}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+
+              <Button
+                variant="outlined"
+                disabled={!bulkStatus || bulkStatusMutation.isPending}
+                onClick={async () => {
+                  if (!bulkStatus) return;
+                  if (!window.confirm(`Change status of ${selectedIds.length} work orders to "${bulkStatus}"?`)) return;
+                  await bulkStatusMutation.mutateAsync();
+                }}
+              >
+                {bulkStatusMutation.isPending ? 'Applying…' : 'Apply status'}
+              </Button>
+
+              <Button
+                color="error"
+                variant="outlined"
+                disabled={bulkDeleteMutation.isPending}
+                onClick={async () => {
+                  if (!window.confirm(`Delete ${selectedIds.length} work orders?`)) return;
+                  await bulkDeleteMutation.mutateAsync();
+                }}
+              >
+                {bulkDeleteMutation.isPending ? 'Deleting…' : 'Delete selected'}
+              </Button>
+            </Stack>
+          )}
         </Box>
 
         <Divider />
@@ -387,6 +683,14 @@ export function WorkOrdersView() {
             <Table sx={{ minWidth: 1000 }}>
               <TableHead>
                 <TableRow>
+                  <TableCell padding="checkbox">
+                    <Checkbox
+                      checked={isAllSelectedThisPage}
+                      indeterminate={isSomeSelectedThisPage}
+                      onChange={(e) => handleSelectAllOnPage(e.target.checked)}
+                      inputProps={{ 'aria-label': 'select all work orders on page' }}
+                    />
+                  </TableCell>
                   <TableCell>Ticket</TableCell>
                   <TableCell>Title</TableCell>
                   <TableCell>Property / Unit</TableCell>
@@ -405,7 +709,7 @@ export function WorkOrdersView() {
               <TableBody>
                 {isLoading && (
                   <TableRow>
-                    <TableCell colSpan={12} align="center" sx={{ py: 5 }}>
+                    <TableCell colSpan={13} align="center" sx={{ py: 5 }}>
                       <CircularProgress size={24} />
                     </TableCell>
                   </TableRow>
@@ -413,7 +717,7 @@ export function WorkOrdersView() {
 
                 {!isLoading && (error as any) && (
                   <TableRow>
-                    <TableCell colSpan={12} sx={{ py: 3 }}>
+                    <TableCell colSpan={13} sx={{ py: 3 }}>
                       <Typography color="error">Failed to load work orders.</Typography>
                     </TableCell>
                   </TableRow>
@@ -421,7 +725,7 @@ export function WorkOrdersView() {
 
                 {!isLoading && !error && workOrders.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={12} sx={{ py: 5 }} align="center">
+                    <TableCell colSpan={13} sx={{ py: 5 }} align="center">
                       <Typography variant="body2" sx={{ color: 'text.secondary' }}>
                         No work orders found.
                       </Typography>
@@ -431,6 +735,13 @@ export function WorkOrdersView() {
 
                 {workOrders.map((wo) => (
                   <TableRow key={wo.id} hover>
+                    <TableCell padding="checkbox">
+                      <Checkbox
+                        checked={selectedIds.includes(wo.id)}
+                        onChange={(e) => handleSelectOne(wo.id, e.target.checked)}
+                        inputProps={{ 'aria-label': `select ${wo.ticket_number}` }}
+                      />
+                    </TableCell>
                     <TableCell>{wo.ticket_number}</TableCell>
                     <TableCell>
                       <Typography variant="subtitle2">{wo.title}</Typography>
@@ -456,6 +767,22 @@ export function WorkOrdersView() {
                     <TableCell>{wo.vendor?.name || '-'}</TableCell>
                     <TableCell align="right">
                       <Stack direction="row" spacing={1} justifyContent="flex-end">
+                        <Tooltip title="View">
+                          <IconButton onClick={() => openDetails(wo.id)}>
+                            <Iconify icon="solar:eye-bold" />
+                          </IconButton>
+                        </Tooltip>
+
+                        <Tooltip title="Quick status">
+                          <IconButton
+                            onClick={(e) =>
+                              setStatusMenu({ anchorEl: e.currentTarget as any, workOrderId: wo.id })
+                            }
+                          >
+                            <Iconify icon="custom:menu-duotone" />
+                          </IconButton>
+                        </Tooltip>
+
                         <Tooltip title="Edit">
                           <IconButton onClick={() => openEdit(wo)}>
                             <Iconify icon="solar:pen-bold" />
@@ -474,6 +801,27 @@ export function WorkOrdersView() {
             </Table>
           </Scrollbar>
         </TableContainer>
+
+        <Menu
+          anchorEl={statusMenu.anchorEl}
+          open={Boolean(statusMenu.anchorEl)}
+          onClose={() => setStatusMenu({ anchorEl: null, workOrderId: null })}
+        >
+          {STATUS_OPTIONS.map((o) => (
+            <MenuItem
+              key={o.value}
+              onClick={async () => {
+                const id = statusMenu.workOrderId;
+                setStatusMenu({ anchorEl: null, workOrderId: null });
+                if (!id) return;
+                await changeStatusMutation.mutateAsync({ id, status: o.value });
+              }}
+              disabled={changeStatusMutation.isPending}
+            >
+              {o.label}
+            </MenuItem>
+          ))}
+        </Menu>
 
         <TablePagination
           component="div"
@@ -777,6 +1125,196 @@ export function WorkOrdersView() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* Details Drawer */}
+      <Drawer
+        anchor="right"
+        open={detailsOpen}
+        onClose={() => setDetailsOpen(false)}
+        PaperProps={{ sx: { width: { xs: '100%', md: 560 } } }}
+      >
+        <Box sx={{ p: 3 }}>
+          <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 2 }}>
+            <Box>
+              <Typography variant="h6">Work Order Details</Typography>
+              <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+                {selectedWorkOrder?.ticket_number || '-'}
+              </Typography>
+            </Box>
+
+            <IconButton onClick={() => setDetailsOpen(false)}>
+              <Iconify icon="mingcute:close-line" />
+            </IconButton>
+          </Stack>
+
+          {selectedWorkOrderLoading ? (
+            <CircularProgress />
+          ) : !selectedWorkOrder ? (
+            <Typography sx={{ py: 2 }} color="text.secondary">
+              No work order selected.
+            </Typography>
+          ) : (
+            <>
+              <Stack spacing={1} sx={{ mb: 2 }}>
+                <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+                  <Typography variant="h6" sx={{ mr: 1 }}>
+                    {selectedWorkOrder.title}
+                  </Typography>
+                  <Label color={statusLabelColor(selectedWorkOrder.status)}>
+                    {STATUS_OPTIONS.find((s) => s.value === selectedWorkOrder.status)?.label || selectedWorkOrder.status}
+                  </Label>
+                </Stack>
+
+                <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+                  {selectedWorkOrder.property?.name || '-'}
+                  {selectedWorkOrder.unit?.unit_number ? ` • Unit ${selectedWorkOrder.unit.unit_number}` : ''}
+                </Typography>
+
+                <Typography variant="body2">
+                  <strong>Category:</strong>{' '}
+                  {CATEGORY_OPTIONS.find((c) => c.value === selectedWorkOrder.category)?.label || selectedWorkOrder.category}
+                </Typography>
+                <Typography variant="body2">
+                  <strong>Priority:</strong>{' '}
+                  {PRIORITY_OPTIONS.find((p) => p.value === selectedWorkOrder.priority)?.label || selectedWorkOrder.priority}
+                </Typography>
+                <Typography variant="body2">
+                  <strong>Scheduled:</strong> {formatDate(selectedWorkOrder.scheduled_date)}
+                </Typography>
+                <Typography variant="body2">
+                  <strong>Estimated:</strong>{' '}
+                  {selectedWorkOrder.estimated_cost != null ? formatMoney(selectedWorkOrder.estimated_cost) : '-'}
+                  {' • '}<strong>Actual:</strong>{' '}
+                  {selectedWorkOrder.actual_cost != null ? formatMoney(selectedWorkOrder.actual_cost) : '-'}
+                </Typography>
+                <Typography variant="body2">
+                  <strong>Assigned:</strong> {(selectedWorkOrder as any).assignedTo?.name || '-'}
+                  {' • '}<strong>Vendor:</strong> {selectedWorkOrder.vendor?.name || '-'}
+                </Typography>
+              </Stack>
+
+              <Typography variant="subtitle2" sx={{ mb: 1 }}>
+                Description
+              </Typography>
+              <Card sx={{ p: 2, mb: 2 }}>
+                <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
+                  {selectedWorkOrder.description}
+                </Typography>
+              </Card>
+
+              <Divider sx={{ my: 2 }} />
+
+              <Typography variant="subtitle2" sx={{ mb: 1 }}>
+                Updates
+              </Typography>
+
+              <Stack spacing={1.5} sx={{ mb: 2 }}>
+                {(selectedWorkOrder.updates || []).length === 0 ? (
+                  <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+                    No updates yet.
+                  </Typography>
+                ) : (
+                  (selectedWorkOrder.updates || []).map((u: any) => (
+                    <Card key={u.id} sx={{ p: 2 }}>
+                      <Stack spacing={0.5}>
+                        <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
+                          <Typography variant="subtitle2">
+                            {u.user?.name || 'User'}
+                          </Typography>
+                          <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                            {formatDate(u.created_at)}
+                          </Typography>
+                        </Stack>
+                        {(u.old_status || u.new_status) && (
+                          <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                            Status: {u.old_status || '-'} → {u.new_status || '-'}
+                          </Typography>
+                        )}
+                        <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
+                          {u.comment}
+                        </Typography>
+
+                        {Array.isArray(u.attachments) && u.attachments.length > 0 && (
+                          <Stack spacing={0.5} sx={{ mt: 1 }}>
+                            <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                              Attachments
+                            </Typography>
+                            {u.attachments.map((att: any, idx: number) => {
+                              const href = attachmentUrl(att);
+                              const label = att?.name || att?.path || att?.url || String(att);
+
+                              return (
+                                <Typography key={`${u.id}-att-${idx}`} variant="body2">
+                                  {href ? (
+                                    <a href={href} target="_blank" rel="noreferrer">
+                                      {label}
+                                    </a>
+                                  ) : (
+                                    label
+                                  )}
+                                </Typography>
+                              );
+                            })}
+                          </Stack>
+                        )}
+                      </Stack>
+                    </Card>
+                  ))
+                )}
+              </Stack>
+
+              <Typography variant="subtitle2" sx={{ mb: 1 }}>
+                Add update
+              </Typography>
+              <Stack spacing={2}>
+                <TextField
+                  label="Comment"
+                  value={updateForm.comment}
+                  onChange={(e) => setUpdateForm((p) => ({ ...p, comment: e.target.value }))}
+                  fullWidth
+                  multiline
+                  minRows={3}
+                />
+
+                <TextField
+                  type="file"
+                  inputProps={{ multiple: true }}
+                  onChange={(e: any) => {
+                    const files = Array.from((e.target.files || []) as FileList);
+                    setUpdateFiles(files);
+                  }}
+                  fullWidth
+                  helperText={updateFiles.length ? `${updateFiles.length} file(s) selected` : 'Attach files (optional)'}
+                />
+
+                <FormControl fullWidth>
+                  <InputLabel>Change status (optional)</InputLabel>
+                  <Select
+                    value={updateForm.new_status}
+                    label="Change status (optional)"
+                    onChange={(e) => setUpdateForm((p) => ({ ...p, new_status: e.target.value as any }))}
+                  >
+                    <MenuItem value="">No change</MenuItem>
+                    {STATUS_OPTIONS.map((o) => (
+                      <MenuItem key={o.value} value={o.value}>
+                        {o.label}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+
+                <Button
+                  variant="contained"
+                  onClick={() => addUpdateMutation.mutate()}
+                  disabled={!updateForm.comment.trim() || addUpdateMutation.isPending}
+                >
+                  {addUpdateMutation.isPending ? 'Posting…' : 'Post update'}
+                </Button>
+              </Stack>
+            </>
+          )}
+        </Box>
+      </Drawer>
     </Box>
   );
 }

@@ -47,6 +47,7 @@ export interface ExpenseByCategory {
   total_cost: number;
   category: string;
   work_order_count: number;
+  source?: 'work_order' | 'manual';
 }
 
 export interface InvoiceByStatus {
@@ -76,6 +77,8 @@ export interface OwnerStatement {
   expenses: {
     total: number;
     by_category: ExpenseByCategory[];
+    maintenance_total?: number;
+    other_total?: number;
   };
   invoicing: {
     total_billed: number;

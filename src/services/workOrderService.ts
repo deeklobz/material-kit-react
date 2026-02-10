@@ -69,6 +69,21 @@ export interface PaginatedResponse<T> {
   total: number;
 }
 
+export interface WorkOrderStats {
+  by_status: Record<WorkOrderStatus, number>;
+  overdue_scheduled: number;
+  urgent_open: number;
+  avg_open_days: number;
+  expenses: {
+    actual_total: number;
+    actual_completed: number;
+    estimated_open: number;
+    spent_completed: number;
+    committed_open: number;
+    total: number;
+  };
+}
+
 export interface WorkOrderListParams {
   property_id?: string;
   status?: WorkOrderStatus;
@@ -76,6 +91,10 @@ export interface WorkOrderListParams {
   category?: WorkOrderCategory;
   page?: number; // 1-based (Laravel)
   per_page?: number;
+}
+
+export interface WorkOrderStatsParams {
+  property_id?: string;
 }
 
 export interface WorkOrderCreateData {
@@ -105,7 +124,18 @@ export interface WorkOrderUpdateData {
   actual_cost?: number | null;
 }
 
+export interface WorkOrderAddUpdateData {
+  comment: string;
+  new_status?: WorkOrderStatus;
+  attachments?: any[];
+}
+
 export const workOrderService = {
+  getStats: async (params?: WorkOrderStatsParams): Promise<WorkOrderStats> => {
+    const { data } = await api.get('/work-orders/stats', { params });
+    return data;
+  },
+
   getAll: async (params?: WorkOrderListParams): Promise<PaginatedResponse<WorkOrder>> => {
     const { data } = await api.get('/work-orders', { params });
     return data;
@@ -128,5 +158,13 @@ export const workOrderService = {
 
   delete: async (id: string): Promise<void> => {
     await api.delete(`/work-orders/${id}`);
+  },
+
+  addUpdate: async (
+    id: string,
+    payload: WorkOrderAddUpdateData | FormData
+  ): Promise<{ update: WorkOrderUpdate; work_order: WorkOrder }> => {
+    const { data } = await api.post(`/work-orders/${id}/updates`, payload);
+    return data;
   },
 };

@@ -23,6 +23,7 @@ export const InvoicesPage = lazy(() => import('src/pages/invoices'));
 export const PaymentsPage = lazy(() => import('src/pages/payments'));
 export const WorkOrdersPage = lazy(() => import('src/pages/work-orders'));
 export const ReportsPage = lazy(() => import('src/pages/reports'));
+export const UtilitiesPage = lazy(() => import('src/pages/utilities'));
 export const OrganizationsPage = lazy(() => import('src/pages/organizations'));
 export const SubscriptionPlansPage = lazy(() => import('src/pages/subscription-plans'));
 export const ActiveSubscriptionsPage = lazy(() => import('src/pages/active-subscriptions'));
@@ -86,6 +87,7 @@ export const routesSection: RouteObject[] = [
       { path: 'payments', element: <PaymentsPage /> },
       { path: 'work-orders', element: <WorkOrdersPage /> },
       { path: 'reports', element: <ReportsPage /> },
+      { path: 'utilities', element: <UtilitiesPage /> },
       { path: 'organizations', element: <OrganizationsPage /> },
       { path: 'subscription-plans', element: <SubscriptionPlansPage /> },
       { path: 'active-subscriptions', element: <ActiveSubscriptionsPage /> },

@@ -50,7 +50,7 @@ export const unitService = {
   },
 
   getByProperty: async (propertyId: string): Promise<Unit[]> => {
-    const { data } = await api.get(`/properties/${propertyId}/units`);
+    const { data } = await api.get('/units', { params: { property_id: propertyId, per_page: 200 } });
     return data.data || data;
   },
 
